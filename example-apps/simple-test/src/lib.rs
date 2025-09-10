@@ -364,7 +364,7 @@ async fn main() -> Result<(), String> {
             } else {
                 // Use standard generation mode
                 println!("🎛️  Mode: Standard generation");
-                let text = ctx.generate_until("<|eot_id|>", max_tokens as usize).await;
+                let text = ctx.generate_until(max_tokens as usize).await;
                 (text, static_priority_str, max_tokens as usize)
             }
         }

@@ -2,9 +2,8 @@ use anyhow::{Context, Result, anyhow};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use indicatif::{ProgressBar, ProgressStyle};
-use nix;
 use pie::{
-    BatchingStrategyConfiguration, Config as EngineConfig,
+    Config as EngineConfig,
     auth::{create_jwt, init_secret},
     client::{self, Client},
 };
@@ -76,15 +75,6 @@ pub struct StartArgs {
     /// Enable verbose console logging.
     #[arg(long, short)]
     pub verbose: bool,
-
-    #[arg(long)]
-    pub batching_strategy: Option<String>,
-    /// The 'k' parameter for the batching strategy.
-    #[arg(long)]
-    pub batching_strategy_k: Option<u32>,
-    /// The 't' parameter for the batching strategy.
-    #[arg(long)]
-    pub batching_strategy_t: Option<u32>,
 }
 
 /// Helper for clap to expand `~` in path arguments.
@@ -141,9 +131,6 @@ struct ConfigFile {
     cache_dir: Option<PathBuf>,
     verbose: Option<bool>,
     log: Option<PathBuf>,
-    batching_strategy: Option<String>,
-    batching_strategy_k: Option<u32>,
-    batching_strategy_t: Option<u32>,
     #[serde(default)]
     backend: Vec<toml::Value>,
 }
@@ -403,15 +390,21 @@ async fn start_interactive_session(
         eprintln!("Warning: Failed to save command history: {}", err);
     }
 
-    for child in backend_processes {
+    // Iterate through the child processes, signal them, and wait for them to exit.
+    for mut child in backend_processes { // <-- Make `child` mutable to call .wait()
         if let Some(pid) = child.id() {
+            let pgid = nix::unistd::Pid::from_raw(pid as i32);
             println!("- Terminating backend process group with PID: {}", pid);
-            if let Err(e) = nix::sys::signal::killpg(
-                nix::unistd::Pid::from_raw(pid as i32),
-                nix::sys::signal::Signal::SIGTERM,
-            ) {
-                eprintln!("  Failed to terminate process group {}: {}", pid, e);
+
+            // Send SIGTERM to the entire process group.
+            if let Err(e) = nix::sys::signal::killpg(pgid, nix::sys::signal::Signal::SIGTERM) {
+                eprintln!("  Failed to send SIGTERM to process group {}: {}", pid, e);
             }
+        }
+
+        // This prevents the main program from exiting before cleanup is complete.
+        if let Err(e) = child.wait().await {
+            eprintln!("  Error while waiting for backend process to exit: {}", e);
         }
     }
 
@@ -671,36 +664,6 @@ fn build_configs(args: &StartArgs) -> Result<(EngineConfig, Vec<toml::Value>)> {
             .map(char::from)
             .collect()
     });
-    let strategy_name = args
-        .batching_strategy
-        .clone()
-        .or(file_config.batching_strategy)
-        .unwrap_or_else(|| "adaptive".to_string());
-
-    let k = args
-        .batching_strategy_k
-        .or(file_config.batching_strategy_k)
-        .unwrap_or(8) as usize;
-
-    let t_millis = args
-        .batching_strategy_t
-        .or(file_config.batching_strategy_t)
-        .unwrap_or(16) as u64;
-    let t = Duration::from_millis(t_millis);
-
-    // 2. Construct the enum based on the strategy name string
-    let batching_strategy = match strategy_name.to_lowercase().as_str() {
-        "adaptive" => Some(BatchingStrategyConfiguration::Adaptive),
-        "k" => Some(BatchingStrategyConfiguration::KOnly { k }),
-        "t" => Some(BatchingStrategyConfiguration::TOnly { t }),
-        "kort" => Some(BatchingStrategyConfiguration::KOrT { k, t }),
-        other => {
-            return Err(anyhow!(
-                "Unknown batching strategy: '{}'. Supported values are: 'adaptive', 'k', 't', 'kort'.",
-                other
-            ));
-        }
-    };
 
     let engine_config = EngineConfig {
         host: args
@@ -716,7 +679,6 @@ fn build_configs(args: &StartArgs) -> Result<(EngineConfig, Vec<toml::Value>)> {
             .unwrap_or_else(|| get_pie_home().unwrap().join("programs")),
         verbose: args.verbose || file_config.verbose.unwrap_or(false),
         log: args.log.clone().or(file_config.log),
-        batching_strategy,
     };
 
     // Return both the engine config and the backend configs
