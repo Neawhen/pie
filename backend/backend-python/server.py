@@ -1,3 +1,7 @@
+# Set protobuf implementation before importing protobuf modules
+import os
+os.environ.setdefault('PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION', 'python')
+
 import random
 import msgpack
 import torch
@@ -5,7 +9,6 @@ from websockets.sync.client import connect
 import zmq
 import time
 import fire
-import os
 import tomli
 from pathlib import Path
 from platformdirs import user_cache_dir

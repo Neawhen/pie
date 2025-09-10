@@ -1,2 +1,2 @@
 # re-export client.py
-from .client import *
+from .client import PieClient, Instance
